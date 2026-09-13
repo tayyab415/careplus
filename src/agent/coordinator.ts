@@ -8,6 +8,7 @@ import { screenRedFlags } from "@/core/policy/redFlags";
 import { evaluateRouting } from "@/core/policy/policyEngine";
 import { createStaffReview, urgentActions } from "@/actions/staffReview";
 import { extractLabel } from "@/specialists/vision/labelExtractor";
+import { storeEvidence } from "@/actions/evidence";
 import { loadContext, renderContext } from "./context";
 import { systemPrompt } from "./prompts";
 import { executeTool, toolDefinitions, TurnState } from "./tools";
@@ -53,13 +54,14 @@ export async function ingestDocument(input: {
   hint?: string;
 }): Promise<UploadedDocument> {
   const store = getStore();
+  const docId = shortId("doc");
   const doc: UploadedDocument = {
-    id: shortId("doc"),
+    id: docId,
     patientId: input.patientId,
     caseId: input.caseId,
     name: input.name,
     mimeType: input.mimeType,
-    uri: `data:${input.mimeType};base64,${input.base64}`,
+    uri: await storeEvidence({ docId, caseId: input.caseId, mimeType: input.mimeType, base64: input.base64 }),
     sizeBytes: Math.round((input.base64.length * 3) / 4),
     confirmedByPatient: false,
     uploadedAt: nowIso(),

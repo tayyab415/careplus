@@ -67,7 +67,7 @@ export const env = {
 
   // ---- Store ----
   /** "firestore" | "memory". Memory store persists to .careplus/store.json for dev. */
-  storeBackend: str("STORE_BACKEND", "memory"),
+  storeBackend: str("STORE_BACKEND", "firestore"),
   memoryStorePath: str("MEMORY_STORE_PATH", path.join(root, ".careplus", "store.json")),
 
   // ---- Behaviour ----
@@ -86,6 +86,7 @@ export function integrationStatus() {
     vertexGemini: true, // ADC / SA
     txgemma: Boolean(env.txgemmaEndpointId),
     firestore: env.storeBackend === "firestore",
+    cloudStorage: Boolean(env.evidenceBucket) && !env.dryRun,
     calendar: Boolean(env.gcpServiceAccountKey) && !env.dryRun,
     slack: Boolean(env.slackBotToken && env.slackTriageChannel) && !env.dryRun,
     sms: Boolean(env.twilioAccountSid && env.twilioAuthToken && env.twilioFromNumber) && !env.dryRun,

@@ -129,7 +129,7 @@ export default function Home() {
           {Object.entries(data.integrations).map(([k, v]) => (
             <span key={k} className="inline-flex items-center gap-1.5">
               <span className={`h-1.5 w-1.5 rounded-full ${v ? "bg-green" : "bg-stone-300"}`} />
-              {k === "vertexGemini" ? "Gemini (Vertex)" : k === "txgemma" ? "TxGemma (Vertex)" : k === "sms" ? "SMS (Twilio)" : k === "calendar" ? "Google Calendar" : k[0].toUpperCase() + k.slice(1)}
+              {k === "vertexGemini" ? "Gemini (Vertex)" : k === "txgemma" ? "TxGemma (Vertex)" : k === "sms" ? "SMS (Twilio)" : k === "calendar" ? "Google Calendar" : k === "cloudStorage" ? "Cloud Storage" : k[0].toUpperCase() + k.slice(1)}
               {!v && <span className="text-stone-400">· simulated</span>}
             </span>
           ))}

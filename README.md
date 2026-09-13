@@ -172,17 +172,3 @@ npm run start:portal
 ```
 
 Open `http://localhost:3000` to interact with the patient clinic portal.
-
----
-
-## Demo video
-
-Watch the 2-minute demonstration: **[Link to Demo Video (YouTube / Loom)]**
-
-### Demo breakdown (under 120 seconds)
-
-- **0:00 - 0:25:** Patient explains past adverse reaction via portal voice/text; CarePlus identifies the missing record.
-- **0:25 - 0:50:** Patient uploads photo of medicine bottle; vision module extracts chemical entity and TxGemma runs molecular evaluation.
-- **0:50 - 1:20:** CarePlus resolves dependency, books the medication-review appointment, and posts the case record to Slack.
-- **1:20 - 1:50:** Clinic staff in Slack queries the agent (*"Why was CP-1042 escalated?"*) and pushes a follow-up question back to the patient.
-- **1:50 - 2:00:** Verification suite runs showing 100% test pass on multi-app tool execution.

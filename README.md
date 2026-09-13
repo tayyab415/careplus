@@ -1,174 +1,252 @@
 # CarePlus
 
-An autonomous patient-intake and care-coordination agent for clinics.
+An autonomous patient-intake and care-coordination agent for clinics, grounded by open-weight biochemical foundation models.
 
-Patients often leave consultations with fragmented instructions: multiple tests to schedule, follow-ups to coordinate, accessibility requirements, and vague recollections of past adverse medication reactions. Clinic staff spend hours manually chasing records, calling labs, and answering routine intake questions.
+Patients frequently present to clinics with fragmented care directives: multiple tests to arrange, follow-up timelines to calculate, accessibility accommodations to verify, and ambiguous recollections of prior adverse drug reactions. Clinic administrative staff spend significant daily hours manually tracking records, calling testing sites, and verifying clinical timelines.
 
-CarePlus automates the administrative and care-coordination workload. Existing and prospective patients interact with the clinic through voice, text, and photo uploads. CarePlus reconstructs messy medication timelines, requests missing physical evidence, consults a specialized open-weight molecular model for biochemical grounding, and executes actions across external clinic operations. It only escalates exceptions and medically consequential edge cases to clinic staff.
+CarePlus automates clinic administrative coordination. Patients interact with the clinic through text, voice, and document uploads. CarePlus reconstructs incomplete medication timelines, requests targeted physical verification (such as prescription labels or bottle photographs), computes molecular property predictions using Google's open-weight **TxGemma** foundation model, and executes actions across clinic scheduling and internal staff operations.
 
-CarePlus is autonomous about coordination, not clinical treatment or diagnosis.
-
----
-
-## The problem
-
-1. **Patient friction and incomplete histories:** Patients forget exact drug formulations or brand names. When an adverse symptom happened in the past, clinics lack the exact chemical entity without tedious manual chart searches.
-2. **Administrative burden on clinic staff:** Coordinating blood work, follow-up windows, accessibility accommodations, and lab turnarounds is multi-step manual labor.
-3. **Unsafe generic AI chatbots:** Standard LLMs either hallucinate medical advice or refuse to take actionable steps, providing generic conversational disclaimers without completing clinic tasks.
+CarePlus executes operational coordination. It does not provide clinical diagnosis or prescribe treatments. When molecular predictions flag adverse events, or when historical data contains unresolvable ambiguity, CarePlus escalates structured case briefs directly to clinic staff.
 
 ---
 
-## What CarePlus does
+## Technical core: TxGemma molecular evaluation pipeline
 
-- **Reconstructs patient medication timelines:** Resolves ambiguous patient recollections by asking for targeted physical evidence (such as pill bottles or prescription labels) via multimodal inspection.
-- **Biochemical property evaluation (TxGemma):** Uses Google's open-weight TxGemma model as a bounded molecular specialist to inspect SMILES representations, targets, and adverse reaction profiles.
-- **Dependency-aware appointment orchestration:** Chains interdependent care tasks in order (for example: scheduling a blood draw, calculating lab processing windows, and booking the doctor follow-up only after lab results will be ready).
-- **Staff exception routing:** Pushes ambiguous cases, unconfirmed adverse histories, or clinical escalation requests into the clinic's internal operational channels with structured summaries and one-click actions.
+Generic large language models hallucinate chemical properties and lack grounding in pharmacology datasets. CarePlus uses Google's open-weight **TxGemma** (part of the Health AI Developer Foundations / HAI-DEF suite) deployed on Google Cloud Vertex AI as a bounded biochemical specialist.
+
+```
++-------------------------------------------------------------------------------+
+|                       TxGemma Molecular Inference Engine                      |
+|                                                                               |
+|  [Uploaded Prescription / Bottle]                                             |
+|               |                                                               |
+|               v                                                               |
+|   +-----------------------+     REST API      +---------------------------+   |
+|   | Vision OCR Extractor  | ----------------> | NIH PubChem PUG REST API  |   |
+|   +-----------------------+                   +-------------+-------------+   |
+|                                                             |                 |
+|                                      Canonical SMILES & CID |                 |
+|                                                             v                 |
+|   +-----------------------------------------------------------------------+   |
+|   |                  TxGemma Predict Model (Vertex AI)                    |   |
+|   |  Task Fine-Tuning: Therapeutics Data Commons (TDC) 66 Benchmark Suite |   |
+|   +-----------------------------------+-----------------------------------+   |
+|                                       |                                       |
+|             +-------------------------+-------------------------+             |
+|             |                                                   |             |
+|             v                                                   v             |
+|  [ClinTox / FDA Approval]                           [BBB_Martins Permeability] |
+|  P(Clinical Toxicity Fail)                          P(Blood-Brain Barrier Cross)|
+|             |                                                   |             |
+|             +-------------------------+-------------------------+             |
+|                                       |                                       |
+|                                       v                                       |
+|                  +-----------------------------------------+                  |
+|                  |     Biochemical Safety Profile JSON     |                  |
+|                  |  - Compound: Promethazine               |                  |
+|                  |  - SMILES: CC(CN1C2=CC=CC=C2SC3=CC=CC=C31)|                  |
+|                  |  - BBB Penetration: High (>0.89)        |                  |
+|                  |  - CNS Sedation / Dizziness Risk: Severe|                  |
+|                  +--------------------+--------------------+                  |
+|                                       |                                       |
+|                                       v                                       |
+|                       CarePlus Coordinator Agent Plan                         |
++-------------------------------------------------------------------------------+
+```
+
+### 1. Representation & chemical entity resolution
+- **Image ingestion:** When a patient uploads physical evidence, the vision module extracts drug trade names, active pharmaceutical ingredients (APIs), and National Drug Codes (NDCs).
+- **PubChem PUG REST integration:** The agent queries NCBI PubChem (`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{name}/property/CanonicalSMILES,MolecularWeight,MolecularFormula/JSON`) to obtain verified chemical identifiers, including Canonical SMILES, CID, and molecular weights.
+
+### 2. Therapeutics Data Commons (TDC) model execution
+TxGemma is trained on the Therapeutics Data Commons benchmark suite across 66 molecular property tasks. CarePlus invokes specific TDC task prompts against the Vertex AI endpoint:
+- **`ClinTox` benchmark task:** Evaluates clinical trial toxicity failures and FDA approval status to determine clinical risk profiles.
+- **`BBB_Martins` (Blood-Brain Barrier) benchmark task:** Evaluates blood-brain barrier permeability. For example, verifying whether a compound cross-penetrates the central nervous system (CNS), correlating patient-reported dizziness, lethargy, or vertigo with molecular pharmacokinetics.
+- **Drug-drug interaction (DDI) & target profile:** Classifies adverse metabolic pathways when combined with active prescriptions in the patient's existing clinic profile.
+
+### 3. Bounded specialist output
+TxGemma returns structured predictions (classification probabilities and regression values) rather than unconstrained conversational text. The coordinator agent parses these numerical outputs into deterministic risk tiers:
+- **`LOW_RISK_ADMIN`:** No contradictory adverse markers detected. Completes administrative booking automatically.
+- **`ADVERSE_HISTORICAL_CORRELATION`:** Molecular profile corroborates patient's reported symptoms (e.g. Promethazine crossing BBB matching historical dizziness). Schedules dedicated 15-minute medication review and generates an escalation payload.
+- **`CONTRAINDICATION_ALERT`:** High-probability DDI or toxicity threshold exceeded. Halts self-service booking and triggers an urgent staff callback task in Slack.
 
 ---
 
 ## External app integrations
 
-CarePlus connects to and executes actions across three external systems to complete end-to-end workflows:
+CarePlus connects to three external services to complete the end-to-end loop:
 
-| External app | Role in workflow | Actions taken |
+| External service | Role in pipeline | Concrete API actions |
 |---|---|---|
-| **Google Cloud Platform (Vertex AI & Cloud Storage)** | Molecular inference & secure document storage | 1. Serves the TxGemma open-weight model for molecular structure & adverse-event profile analysis.<br>2. Stores uploaded prescription labels and patient photos with signed verification URLs. |
-| **Slack** | Clinic staff exception console | 1. Posts structured escalation cards (`CP-1042`) when adverse reactions or ambiguous histories require human review.<br>2. Listens for staff commands (`why escalated`, `ask follow-up`) to update patient state asynchronously. |
-| **Google Calendar / CalDAV Clinic Scheduling** | Dependency-aware appointment booking | 1. Inspects practitioner availability and booking constraints.<br>2. Schedules chained appointments (Lab Draw $\rightarrow$ Follow-up Review) with calendar invites and accessibility notes. |
-
-*(Optional third-party CRM/EMR webhook: Dispatches structured JSON intake summaries to clinic webhook endpoints for EHR record ingestion).*
+| **Google Cloud Platform (Vertex AI & Cloud Storage)** | Molecular inference & audit-compliant artifact storage | 1. `POST /v1/projects/{project}/locations/{location}/endpoints/{id}:predict`: Executes TxGemma TDC benchmark inference on canonical SMILES.<br>2. `storage.objects.insert`: Archives prescription label images with HMAC-signed verification URLs. |
+| **Slack API** | Operational exception console for clinical staff | 1. `chat.postMessage`: Dispatches interactive escalation blocks (`CP-1042`) containing patient context, uploaded label thumbnails, and TxGemma molecular risk outputs.<br>2. `block_actions` listener: Processes staff decisions (e.g. approving a review slot, requesting dosage intervals) and relays instructions back to the patient session. |
+| **Google Calendar / CalDAV API** | Dependency-aware multi-step appointment scheduler | 1. `freeBusy.query`: Evaluates clinician and phlebotomy availability constraints.<br>2. `events.insert`: Sequentially schedules ordered dependencies (e.g. Lab Draw at $T_0$, 48-hour analytical window, follow-up consultation at $T_0 + 72\text{h}$) with structured metadata. |
 
 ---
 
 ## System architecture
 
-CarePlus uses a hub-and-spoke multi-agent topology to separate patient-facing coordination from specialist domain reasoning:
+CarePlus implements a multi-agent orchestration architecture:
 
 ```
-                          +-------------------------+
-                          |   Patient Web Portal    |
-                          |  (Voice / Text / Photo) |
-                          +------------+------------+
-                                       |
-                                       v
-                    +-------------------------------------+
-                    |       CarePlus Coordinator Agent     |
-                    |        (GPT-5.6 / Gemini Flash)     |
-                    +----+---------------------------+----+
-                         |                           |
-         +---------------+--+                     +--+----------------+
-         |                  |                     |                   |
-         v                  v                     v                   v
-+-----------------+ +----------------+   +-----------------+ +-----------------+
-| Patient History | | Vision Label   |   | TxGemma Model   | | Calendar / EHR  |
-| Store (GCP/SQL) | | Parser         |   | (Vertex AI)     | | Dispatcher      |
-+-----------------+ +----------------+   +--------+--------+ +-----------------+
-                                                  |
-                                                  v
-                                       +---------------------+
-                                       |   Slack Exception   |
-                                       |   Console (Staff)   |
-                                       +---------------------+
+                            +--------------------------+
+                            |    Patient Web Client    |
+                            |  (WebRTC Voice / HTTPS)  |
+                            +------------+-------------+
+                                         |
+                                         v
+                      +--------------------------------------+
+                      |      CarePlus Orchestrator Agent     |
+                      |        (GPT-5.6 / Gemini Flash)      |
+                      +----+-------------+--------------+----+
+                           |             |              |
+          +----------------+             |              +----------------+
+          |                              |                               |
+          v                              v                               v
++--------------------+        +--------------------+          +--------------------+
+| Synthetic Patient  |        | Multimodal Label   |          | External Actions   |
+| History Store      |        | & SMILES Resolver  |          | Dispatcher         |
+| (PostgreSQL / GCP) |        | (PubChem PUG API)  |          | (Calendar / CalDAV)|
++--------------------+        +----------+---------+          +--------------------+
+                                         |
+                                         v
+                              +--------------------+
+                              | TxGemma Specialist |
+                              | (GCP Vertex AI)    |
+                              +----------+---------+
+                                         |
+                                         v
+                              +--------------------+
+                              |  Slack Exception   |
+                              |  Console Engine    |
+                              +--------------------+
 ```
 
-### Routing layers
+### Component breakdown
 
-1. **Coordinator agent:** Manages dialogue state, enforces intake boundaries, extracts symptoms, and sequences dependencies.
-2. **Vision inspection:** Parses uploaded medication labels, identifying active ingredients, NDC codes, and dosages.
-3. **TxGemma molecular service:** Receives identified chemical structures and returns verifiable biochemical property bounds (adverse event correlations, molecular targets, formulation properties).
-4. **Execution dispatcher:** Books calendar slots, writes case logs to database storage, and dispatches Slack notifications for exceptions.
+1. **CarePlus Orchestrator:** Maintains session state, tracks dialogue history, validates required intake variables, and executes conditional logic based on downstream specialist outputs.
+2. **Synthetic Patient History Store:** Houses fixture-backed longitudinal health records, prior appointment outcomes, recorded allergies, and accessibility constraints.
+3. **Multimodal Chemical Resolver:** Combines vision OCR with PubChem REST lookups to bridge physical drug packaging to canonical chemical representations.
+4. **TxGemma Specialist Worker:** An isolated inference worker querying the Vertex AI endpoint for TDC benchmark predictions.
+5. **Slack Exception Console:** A bi-directional integration that converts clinical edge cases into actionable staff tickets.
 
 ---
 
-## The core user journey: Medication history reconstruction
+## Primary evaluation journey: Medication history reconstruction
 
-### Scenario: Maya's medication review
+### Clinical scenario
 
-1. **Intake dialogue:** Maya contacts the clinic portal:  
-   *"My doctor recommended this cough medicine, but I took something similar last year and became dizzy. I can't remember exactly what it was. Can you help me arrange a medication review?"*
-2. **Context retrieval:** CarePlus pulls Maya's synthetic clinic record. It finds a recorded note from June 2025 documenting dizziness, but no confirmed drug name.
-3. **Targeted evidence request:** CarePlus does not guess. It prompts:  
-   *"I found your note about dizziness last June, but the exact medication wasn't recorded. Do you have the old bottle or label you could take a photo of?"*
-4. **Multimodal verification:** Maya uploads a photo of a label showing *Dextromethorphan / Promethazine*. The vision extractor identifies the compound.
-5. **TxGemma analysis:** The agent queries the TxGemma molecular endpoint for the compound's profile. TxGemma confirms known central nervous system side effects matching dizziness.
-6. **Autonomous scheduling:** CarePlus identifies that Maya needs a 15-minute medication review rather than urgent emergency triage. It books the consultation on the clinic calendar for 2:30 PM and attaches the uploaded evidence.
-7. **Staff loop via Slack:** The agent pushes an escalation summary to the clinic's Slack channel:  
-   `[CP-1042] Medication review scheduled: Patient reported dizziness from confirmed Promethazine compound.`  
-   Clinic staff clicks a button in Slack: *"Ask patient date of last dose."* The question appears directly in Maya's portal chat.
+A patient, Maya, contacts the clinic portal:
+> *"My doctor recommended this cough medicine, but I took something similar last year and became dizzy. I cannot remember exactly what it was. Can you help me arrange a medication review?"*
+
+### Execution trace
+
+1. **Intake & history retrieval:** CarePlus pulls Maya's record (`PT-8821`). The store contains a clinician note from June 2025: *"Patient reported post-administration dizziness; active drug name unrecorded."*
+2. **Missing evidence query:** The agent identifies an unverified clinical entity. Rather than guessing, CarePlus requests:
+   > *"I found your note about dizziness from June 2025, but the exact medication name was never confirmed. Do you have the old packaging, bottle, or prescription slip available to photograph?"*
+3. **Multimodal ingestion:** Maya uploads a photo of an old syrup bottle. The vision parser extracts:
+   - Product name: *Promethazine HCl and Dextromethorphan Hydrobromide Oral Solution*
+   - Active ingredients: *Promethazine Hydrochloride, Dextromethorphan HBr*
+4. **Chemical grounding & TxGemma analysis:**
+   - PubChem API resolves Promethazine canonical SMILES: `CC(CN1C2=CC=CC=C2SC3=CC=CC=C31)N(C)C`.
+   - The TxGemma worker runs the `BBB_Martins` and `ClinTox` benchmarks on Vertex AI.
+   - Output: High blood-brain barrier permeability ($p > 0.89$), known central nervous system depression, and confirmed sedative/dizziness profile.
+5. **Dependency-aware scheduling:** The agent classifies this as a non-emergency medication review. It inspects practitioner calendar slots and schedules a 15-minute telehealth consultation for 2:30 PM.
+6. **Bi-directional staff exception loop:**
+   - CarePlus formats an escalation card and posts it to `#clinic-triage` in Slack:
+     ```text
+     [CP-1042] Medication Review Scheduled (Telehealth - 2:30 PM)
+     Patient: Maya Lin (PT-8821)
+     Trigger: Historical Adverse Reaction Verification
+     Identified Molecule: Promethazine HCl (SMILES: CC(CN1C2=CC=CC=C2SC3=CC=CC=C31)N(C)C)
+     TxGemma Finding: High BBB Permeability (p=0.91), sedative profile correlates with dizziness.
+     Action Required: Review concomitant prescriptions prior to call.
+     [Ask Patient: Date of Last Dose] [Approve Intake Notes]
+     ```
+   - Clinic staff clicks **Ask Patient: Date of Last Dose**.
+   - The coordinator agent receives the Slack webhook and surfaces the follow-up question immediately in Maya's active portal session.
 
 ---
 
-## Reliability and evaluation
+## Reliability, testing, and evaluation
 
-To satisfy the hackathon evaluation requirements, CarePlus includes an automated test harness in `tests/` verifying multi-step execution across mock and live environments:
+CarePlus includes an automated verification test suite to validate multi-step agent transitions, API contract reliability, and safety guardrails.
 
 ```bash
-# Run the verification test suite
+# Run the test suite
 npm test
 # or
 python3 -m pytest tests/ -v
 ```
 
-### What the test suite verifies
+### Evaluation test matrix
 
-1. **Multi-step state machine integrity:**
-   - Verifies that the coordinator transitions through `INTAKE` $\rightarrow$ `EVIDENCE_REQUEST` $\rightarrow$ `SPECIALIST_QUERY` $\rightarrow$ `DISPATCH` without skipping prerequisite steps.
-2. **App integration contract tests:**
-   - **GCP Storage / Vision:** Asserts valid image upload, signed URL generation, and JSON label extraction.
-   - **TxGemma endpoint:** Asserts that input SMILES/chemical identifiers produce schema-valid response payloads with known toxicity/adverse risk metrics.
-   - **Slack webhook / Bot:** Asserts formatting of escalation cards and receipt of interactive button callbacks.
-   - **Calendar dispatcher:** Asserts sequential appointment ordering (tests fail if a follow-up is scheduled before a lab draw dependency).
-3. **Safety boundary enforcement:**
-   - Negative tests verifying that the agent rejects diagnostic prompts (*"Do I have cancer?"*) and routes them directly to human staff without hallucinating medical advice.
+| Test category | Suite file | Conditions verified |
+|---|---|---|
+| **Multi-step state machine** | `tests/test_coordinator_flow.py` | Asserts sequential transitions through `INTAKE` $\rightarrow$ `HISTORY_QUERY` $\rightarrow$ `EVIDENCE_REQUEST` $\rightarrow$ `TXGEMMA_PREDICT` $\rightarrow$ `EXTERNAL_DISPATCH`. Ensures no step executes out of order. |
+| **Chemical resolution contract** | `tests/test_pubchem_resolver.py` | Validates that OCR extracted strings correctly resolve to canonical SMILES via PubChem REST API with valid HTTP 200 responses and structure validation. |
+| **TxGemma inference validation** | `tests/test_txgemma_inference.py` | Sends mock and live SMILES strings to the prediction pipeline; asserts schema compliance, probability score bounds ($[0.0, 1.0]$), and expected TDC task formatting. |
+| **Slack interaction loop** | `tests/test_slack_console.py` | Validates Block Kit JSON payload construction and simulates webhook callback payloads from staff button clicks. |
+| **Calendar sequencing** | `tests/test_scheduler_dependencies.py` | Asserts dependency constraints: scheduling fails if a dependent follow-up is booked prior to the prerequisite lab availability window. |
+| **Safety boundaries** | `tests/test_safety_guardrails.py` | Negative tests: verifies that diagnostic requests (*"Diagnose this rash"*) or requests for illegal drug synthesis are blocked from scheduling and routed to staff with standard safety notices. |
 
 ---
 
-## Quick start
+## Setup and local execution
 
 ### Prerequisites
 
-- Node.js 20+ or Python 3.11+
-- Google Cloud SDK (`gcloud` authenticated)
-- Slack Bot Token & Webhook URL
-- OpenAI API Key or Google GenAI API Key
+- Node.js 20+ and Python 3.11+
+- Google Cloud SDK (`gcloud` authenticated with access to Vertex AI)
+- Slack Bot credentials (`SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID`)
+- Google Calendar API credentials
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/careplus.git
+git clone https://github.com/tayyab415/careplus.git
 cd careplus
 
 # Install dependencies
 npm install
-# and for Python services
 pip install -r requirements.txt
 
 # Configure environment variables
 cp .env.example .env
 ```
 
-### Environment variables
+### Configuration (`.env`)
 
 ```ini
-OPENAI_API_KEY=your_openai_key
-GOOGLE_GENAI_API_KEY=your_gemini_key
+# Core LLM Providers
+OPENAI_API_KEY=your_openai_api_key
+GOOGLE_GENAI_API_KEY=your_gemini_api_key
+
+# Google Cloud Platform & TxGemma
 GOOGLE_CLOUD_PROJECT=your_gcp_project_id
-GOOGLE_APPLICATION_CREDENTIALS=path/to/credentials.json
-SLACK_BOT_TOKEN=xoxb-your-token
-SLACK_CHANNEL_ID=C0123456789
-CALENDAR_API_KEY=your_calendar_key
+GOOGLE_CLOUD_LOCATION=us-central1
+TXGEMMA_ENDPOINT_ID=your_vertex_endpoint_id
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json
+
+# Slack Operations Console
+SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
+SLACK_SIGNING_SECRET=your_slack_signing_secret
+SLACK_TRIAGE_CHANNEL=C0123456789
+
+# Clinic Scheduling
+CALENDAR_CLIENT_ID=your_google_calendar_client_id
+CALENDAR_CLIENT_SECRET=your_google_calendar_client_secret
 ```
 
 ### Running the application
 
 ```bash
-# Start the backend agent service & TxGemma mock/connector
-npm run dev
+# 1. Start the backend orchestration and TxGemma dispatch service
+npm run dev:server
 
-# In a separate terminal, launch the patient portal UI
-npm run start:portal
+# 2. Start the clinic portal web interface
+npm run dev:portal
 ```
 
-Open `http://localhost:3000` to interact with the patient clinic portal.
+Access the patient portal at `http://localhost:3000`.

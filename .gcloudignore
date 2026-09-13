@@ -1,0 +1,12 @@
+# Files excluded from the Cloud Build upload context (`gcloud builds submit` / `gcloud run deploy --source`).
+.git
+node_modules
+.next
+.careplus
+secrets
+.env
+.env.*
+!.env.example
+.cursor
+coverage
+*.tsbuildinfo

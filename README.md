@@ -2,6 +2,8 @@
 
 **An autonomous patient-intake and care-coordination agent for clinics, built on Google Cloud (Firestore, Cloud Storage, Vertex AI, TxGemma), Google Calendar, Slack, OpenAI and public medication registries.**
 
+Live demo: https://careplus-697390864676.us-central1.run.app
+
 A patient tells CarePlus what happened once. CarePlus reads their clinic record, asks only for what is missing (a photo of the bottle, a discharge letter), resolves the medicine against authoritative sources, runs a bounded molecular research signal through TxGemma, and then completes the next administrative step: it holds the right appointment in Google Calendar, sends the SMS, and opens a staff review in Slack only if the case needs a human. Routine cases finish on their own.
 
 Built for the Multi-App Agent Hackathon. Everything in this repository is synthetic; see [Scope and non-claims](#scope-and-non-claims).
@@ -63,10 +65,11 @@ CarePlus takes actions across these systems. "Live" means the code path runs aga
 | 3 | **Vertex AI: TxGemma 2B** (`txgemma-2b-predict`, Model Garden, dedicated endpoint) | Molecular research signal on the confirmed compound's SMILES using the TDC prompt templates shipped with the model | `predict` per (molecule × task) | Live |
 | 4 | **Vertex AI: Gemini 3.1 Flash Lite** | Vision OCR of bottle/blister/discharge images; fast red-flag classifier (historical vs current mention) | `generateContent` with JSON schema | Live |
 | 5 | **Google Calendar API** (service account owns the clinic calendar) | Holds and books appointments with clinician rosters, rooms, accessibility and dependency constraints; reschedules by cancelling the superseded event | `freebusy.query`, `events.insert / patch / delete`, calendar shared to staff | Live |
-| 6 | **Slack** (Bolt, Socket Mode, Block Kit) | Clinic exception console: review cards with *Confirm appointment · Ask patient · Assign pharmacist · Dismiss*; @mention / DM / thread questions answered from the decision trace | `chat.postMessage`, `chat.update`, `views.open`, interactive actions | Live with tokens; web console at `/staff` otherwise |
+| 6 | **Slack** (Bolt, Socket Mode, Block Kit) | Clinic exception console: review cards with *Confirm appointment · Ask patient · Assign pharmacist · Dismiss*; @mention / DM / thread questions answered from the decision trace | `chat.postMessage`, `chat.update`, `views.open`, interactive actions | Live: cards post from the deployed service; button handling via `npm run slack` (Socket Mode). Web console at `/staff` mirrors the same cards |
 | 7 | **OpenAI** (`gpt-5.6-luna`, Responses API) | Coordinator: tool-calling loop over 20+ typed tools; never routes on its own | Tool calls | Live |
 | 8 | **RxNorm** (NLM) · **PubChem** (PUG REST) · **openFDA** (drug label) | Authoritative medicine identity, molecule record, official label text | REST lookups | Live, public |
 | 9 | **Twilio SMS** | Patient confirmations, held-slot notices, staff questions. Never carries clinical detail; always appends the portal link | `messages.create` | Live with credentials; otherwise a virtual phone panel in the portal |
+| 10 | **Google Cloud Run** | Hosts the app (`careplus` service, runs as the `careplus-agent` service account; secrets from Secret Manager) | Serves the portal, staff console and API | Live |
 
 The home page (`/`) shows which integrations are connected in the running instance.
 
@@ -75,9 +78,10 @@ The home page (`/`) shows which integrations are connected in the running instan
 | Real | Simulated |
 | --- | --- |
 | Every external call in the table above | The clinic, its roster, rooms and appointment types (`src/data/clinic.ts`) |
-| Firestore documents, Cloud Storage objects, Calendar events, Slack messages, SMS | The five patients and their histories (`src/data/patients.ts`) |
+| Firestore documents, Cloud Storage objects, Calendar events, Slack review cards (posted from the deployed service), SMS | The five patients and their histories (`src/data/patients.ts`) |
 | TxGemma and Gemini inference on Vertex AI | The phone, when Twilio credentials are absent (virtual phone panel in the portal) |
 | RxNorm, PubChem and openFDA lookups | The staff console, when Slack tokens are absent (`/staff` renders the same cards) |
+| Hosting on Cloud Run (the live demo above) | |
 
 ## Setup instructions
 
@@ -157,14 +161,14 @@ Demo images are in `public/demo/` (`promethazine-bottle.png`, `amoxicillin-blist
 
 ### 5. Deploy to Cloud Run
 
-`./deploy.sh` builds the image with Cloud Build, deploys the `careplus` service with the `careplus-agent` service account, mounts `OPENAI_API_KEY` and the SA key from Secret Manager, and sets `PUBLIC_BASE_URL` to the service's own URL. Nothing from `.env` or `./secrets` is baked into the image; the one-time project setup is listed at the bottom of the script.
+`./deploy.sh` builds the image with Cloud Build, deploys the `careplus` service with the `careplus-agent` service account, mounts `OPENAI_API_KEY`, the SA key and (when present) the Slack tokens from Secret Manager, and sets `PUBLIC_BASE_URL` to the service's own URL. Nothing from `.env` or `./secrets` is baked into the image; the one-time project setup is listed at the bottom of the script.
 
 ```bash
 ./deploy.sh              # build + deploy
 SKIP_BUILD=1 ./deploy.sh # redeploy the last image
 ```
 
-Hosted instance: _URL to be added_
+Hosted instance: https://careplus-697390864676.us-central1.run.app
 
 ## Reliability testing
 

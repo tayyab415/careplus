@@ -4,6 +4,8 @@
 
 Live demo: https://careplus-697390864676.us-central1.run.app
 
+Demo video: https://storage.googleapis.com/bm-match-footage/cws.mp4
+
 A patient tells CarePlus what happened once. CarePlus reads their clinic record, asks only for what is missing (a photo of the bottle, a discharge letter), resolves the medicine against authoritative sources, runs a bounded molecular research signal through TxGemma, and then completes the next administrative step: it holds the right appointment in Google Calendar, sends the SMS, and opens a staff review in Slack only if the case needs a human. Routine cases finish on their own.
 
 Built for the Multi-App Agent Hackathon. Everything in this repository is synthetic; see [Scope and non-claims](#scope-and-non-claims).

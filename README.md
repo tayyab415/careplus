@@ -29,7 +29,7 @@ Generic large language models hallucinate chemical properties and lack grounding
 |                                                             v                 |
 |   +-----------------------------------------------------------------------+   |
 |   |                  TxGemma Predict Model (Vertex AI)                    |   |
-|   |  Task Fine-Tuning: Therapeutics Data Commons (TDC) 66 Benchmark Suite |   |
+|   |  Pre-trained Benchmark Tasks: Therapeutics Data Commons (TDC) Suite   |   |
 |   +-----------------------------------+-----------------------------------+   |
 |                                       |                                       |
 |             +-------------------------+-------------------------+             |

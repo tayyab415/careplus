@@ -45,7 +45,7 @@ Generic large language models hallucinate chemical properties and lack grounding
 |                  |     Biochemical Safety Profile JSON     |                  |
 |                  |  - Compound: Promethazine               |                  |
 |                  |  - SMILES: CC(CN1C2=CC=CC=C2SC3=CC=CC=C31)|                  |
-|                  |  - BBB Penetration: High (>0.89)        |                  |
+|                  |  - BBB Penetration: High (p > 0.89)     |                  |
 |                  |  - CNS Sedation / Dizziness Risk: Severe|                  |
 |                  +--------------------+--------------------+                  |
 |                                       |                                       |
@@ -67,7 +67,7 @@ TxGemma is trained on the Therapeutics Data Commons benchmark suite across 66 mo
 ### 3. Bounded specialist output
 TxGemma returns structured predictions (classification probabilities and regression values) rather than unconstrained conversational text. The coordinator agent parses these numerical outputs into deterministic risk tiers:
 - **`LOW_RISK_ADMIN`:** No contradictory adverse markers detected. Completes administrative booking automatically.
-- **`ADVERSE_HISTORICAL_CORRELATION`:** Molecular profile corroborates patient's reported symptoms (e.g. Promethazine crossing BBB matching historical dizziness). Schedules dedicated 15-minute medication review and generates an escalation payload.
+- **`ADVERSE_HISTORICAL_CORRELATION`:** Molecular profile corroborates patient's reported symptoms (for example Promethazine crossing BBB matching historical dizziness). Schedules dedicated 15-minute medication review and generates an escalation payload.
 - **`CONTRAINDICATION_ALERT`:** High-probability DDI or toxicity threshold exceeded. Halts self-service booking and triggers an urgent staff callback task in Slack.
 
 ---
@@ -79,8 +79,8 @@ CarePlus connects to three external services to complete the end-to-end loop:
 | External service | Role in pipeline | Concrete API actions |
 |---|---|---|
 | **Google Cloud Platform (Vertex AI & Cloud Storage)** | Molecular inference & audit-compliant artifact storage | 1. `POST /v1/projects/{project}/locations/{location}/endpoints/{id}:predict`: Executes TxGemma TDC benchmark inference on canonical SMILES.<br>2. `storage.objects.insert`: Archives prescription label images with HMAC-signed verification URLs. |
-| **Slack API** | Operational exception console for clinical staff | 1. `chat.postMessage`: Dispatches interactive escalation blocks (`CP-1042`) containing patient context, uploaded label thumbnails, and TxGemma molecular risk outputs.<br>2. `block_actions` listener: Processes staff decisions (e.g. approving a review slot, requesting dosage intervals) and relays instructions back to the patient session. |
-| **Google Calendar / CalDAV API** | Dependency-aware multi-step appointment scheduler | 1. `freeBusy.query`: Evaluates clinician and phlebotomy availability constraints.<br>2. `events.insert`: Sequentially schedules ordered dependencies (e.g. Lab Draw at $T_0$, 48-hour analytical window, follow-up consultation at $T_0 + 72\text{h}$) with structured metadata. |
+| **Slack API** | Operational exception console for clinical staff | 1. `chat.postMessage`: Dispatches interactive escalation blocks (`CP-1042`) containing patient context, uploaded label thumbnails, and TxGemma molecular risk outputs.<br>2. `block_actions` listener: Processes staff decisions (such as approving a review slot or requesting dosage intervals) and relays instructions back to the patient session. |
+| **Google Calendar / CalDAV API** | Dependency-aware multi-step appointment scheduler | 1. `freeBusy.query`: Evaluates clinician and phlebotomy availability constraints.<br>2. `events.insert`: Sequentially schedules ordered dependencies (for example Lab Draw at T0, 48-hour analytical window, follow-up consultation at T0 + 72h) with structured metadata. |
 
 ---
 
@@ -150,7 +150,7 @@ A patient, Maya, contacts the clinic portal:
 4. **Chemical grounding & TxGemma analysis:**
    - PubChem API resolves Promethazine canonical SMILES: `CC(CN1C2=CC=CC=C2SC3=CC=CC=C31)N(C)C`.
    - The TxGemma worker runs the `BBB_Martins` and `ClinTox` benchmarks on Vertex AI.
-   - Output: High blood-brain barrier permeability ($p > 0.89$), known central nervous system depression, and confirmed sedative/dizziness profile.
+   - Output: High blood-brain barrier permeability (p > 0.89), known central nervous system depression, and confirmed sedative/dizziness profile.
 5. **Dependency-aware scheduling:** The agent classifies this as a non-emergency medication review. It inspects practitioner calendar slots and schedules a 15-minute telehealth consultation for 2:30 PM.
 6. **Bi-directional staff exception loop:**
    - CarePlus formats an escalation card and posts it to `#clinic-triage` in Slack:
@@ -185,7 +185,7 @@ python3 -m pytest tests/ -v
 |---|---|---|
 | **Multi-step state machine** | `tests/test_coordinator_flow.py` | Asserts sequential transitions through `INTAKE` $\rightarrow$ `HISTORY_QUERY` $\rightarrow$ `EVIDENCE_REQUEST` $\rightarrow$ `TXGEMMA_PREDICT` $\rightarrow$ `EXTERNAL_DISPATCH`. Ensures no step executes out of order. |
 | **Chemical resolution contract** | `tests/test_pubchem_resolver.py` | Validates that OCR extracted strings correctly resolve to canonical SMILES via PubChem REST API with valid HTTP 200 responses and structure validation. |
-| **TxGemma inference validation** | `tests/test_txgemma_inference.py` | Sends mock and live SMILES strings to the prediction pipeline; asserts schema compliance, probability score bounds ($[0.0, 1.0]$), and expected TDC task formatting. |
+| **TxGemma inference validation** | `tests/test_txgemma_inference.py` | Sends mock and live SMILES strings to the prediction pipeline; asserts schema compliance, probability score bounds ([0.0, 1.0]), and expected TDC task formatting. |
 | **Slack interaction loop** | `tests/test_slack_console.py` | Validates Block Kit JSON payload construction and simulates webhook callback payloads from staff button clicks. |
 | **Calendar sequencing** | `tests/test_scheduler_dependencies.py` | Asserts dependency constraints: scheduling fails if a dependent follow-up is booked prior to the prerequisite lab availability window. |
 | **Safety boundaries** | `tests/test_safety_guardrails.py` | Negative tests: verifies that diagnostic requests (*"Diagnose this rash"*) or requests for illegal drug synthesis are blocked from scheduling and routed to staff with standard safety notices. |

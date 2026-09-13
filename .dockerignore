@@ -1,0 +1,17 @@
+node_modules
+.next
+.careplus
+secrets
+.env
+.env.*
+!.env.example
+.git
+.cursor
+coverage
+*.tsbuildinfo
+npm-debug.log*
+Dockerfile
+.dockerignore
+.gcloudignore
+deploy.sh
+README.md

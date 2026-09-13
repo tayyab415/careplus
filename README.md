@@ -1,278 +1,262 @@
 # CarePlus
 
-### Tell the clinic once. CarePlus carries the case forward.
+**An autonomous patient-intake and care-coordination agent for clinics, built on Google Cloud (Firestore, Cloud Storage, Vertex AI, TxGemma), Google Calendar, Slack, OpenAI and public medication registries.**
 
-**An evidence-aware coordination agent for clinics.**
+Live demo: https://careplus-697390864676.us-central1.run.app
 
-> "I remember the dizziness. I don't remember the medicine."
+A patient tells CarePlus what happened once. CarePlus reads their clinic record, asks only for what is missing (a photo of the bottle, a discharge letter), resolves the medicine against authoritative sources, runs a bounded molecular research signal through TxGemma, and then completes the next administrative step: it holds the right appointment in Google Calendar, sends the SMS, and opens a staff review in Slack only if the case needs a human. Routine cases finish on their own.
 
-That is where CarePlus starts. Maya, a fictional patient, does not know the right appointment type or the exact medicine name. CarePlus reads her existing clinic history, asks for the missing label, waits for her to confirm the transcription, resolves the active ingredient, prepares a medication-review appointment, and sends the unresolved history to staff. When staff asks a follow-up question, it appears back in Maya's conversation.
+Built for the Multi-App Agent Hackathon. Everything in this repository is synthetic; see [Scope and non-claims](#scope-and-non-claims).
 
-CarePlus does not answer and disappear. It keeps the case moving.
+> **What it is:** a multi-step agent that gathers, resolves, schedules, notifies, routes and records across seven external systems, with a deterministic policy engine deciding what it may do on its own.
+> **What it is not:** a diagnosis or treatment tool. CarePlus never diagnoses, prescribes, changes medicines, determines causation or declares a medicine safe. Those limits are enforced in the system prompt (`src/agent/`), the tool surface and the routing engine (`src/core/policy/`), not only in this document.
 
-`144 deterministic tests` · `12/12 live routing scenarios` · `6 connected services` · `5 synthetic patient profiles`
+## Project overview
 
-CarePlus is autonomous about coordination, not treatment. It does not diagnose, prescribe, change medication, infer causation, or decide that a medicine is safe.
+### The problem
 
-## More than a medical chatbot
+Clinic front desks spend their day on coordination, not medicine: "my doctor said to book three things", "I reacted to something like this before but can't remember what", "I need wheelchair access", "I'm new, which appointment do I book?". Each of these needs history, missing evidence, a lookup in an authoritative source, a scheduling decision with dependencies, a confirmation, and sometimes a clinician's eye. Today a human does all of it, or the patient gives up.
 
-A chatbot can summarize Maya's message. CarePlus has to maintain a case, gather evidence, take a permitted action, and leave a trace:
+### What CarePlus does
 
-1. Load the correct patient's synthetic history.
-2. Decide whether it has enough evidence for the requested clinic workflow.
-3. Ask for a label only when medication identity is missing.
-4. Keep OCR output untrusted until the patient accepts or rejects it.
-5. Resolve active ingredients through RxNorm, PubChem, and DailyMed without turning a database match into a clinical conclusion.
-6. Offer an allowed appointment and require explicit confirmation before the write.
-7. Produce a receipt that says which effects are real and which are simulated.
-8. Send unresolved facts to staff, then return the staff's follow-up to the patient.
+In one conversation CarePlus:
 
-The coordinator proposes the next action. The application enforces evidence, consent, access, idempotency, and state-transition rules before anything changes.
+1. **Reconstructs history** from the clinic record in Firestore: prior appointments, patient-reported medicines, care-plan tasks, accessibility preferences, prior agent conversations, staff corrections.
+2. **Asks for missing evidence** and reads it. A photo of a bottle, blister pack or discharge summary goes through Gemini vision OCR (`src/specialists/`). Extracted text is shown back with a confidence score and does not become record until the patient confirms it.
+3. **Resolves the medicine** against authoritative sources: RxNorm (brand to generic to ingredients), PubChem (canonical SMILES, formula, CID) and openFDA (official label: warnings, contraindications, adverse reactions).
+4. **Runs TxGemma**, Google's open therapeutics model on a dedicated Vertex AI endpoint, on the confirmed molecule's SMILES. Tasks (ClinTox, blood-brain barrier, hERG, skin reaction, CYP inhibition) are selected from what the patient reported. The output is labelled everywhere as a research signal for the clinic team, is compared against the official label, and is never shown as a clinical verdict.
+5. **Routes deterministically.** A clinic-authored policy engine (`src/core/policy/policyEngine.ts`), not the LLM, decides the tier:
+   - **Green**: fully autonomous. Book allowed appointment types, send confirmations, record preferences, transfer records.
+   - **Amber**: reversible preparation, then review. Hold the slot, gather evidence, open one staff review, keep the patient informed. Triggers include prior adverse experience, uncertain medicine match, a new medicine alongside a high-monitoring one (for example warfarin), post-discharge changes, conflicting records, TxGemma-vs-label disagreement.
+   - **Red**: clinic-authored red-flag rules (`src/core/policy/redFlags.ts`) screen every message before the LLM sees it. Ordinary workflow stops, the approved urgent instruction is shown with a call action, staff are alerted.
+6. **Takes real actions**: dependency-aware bookings in Google Calendar (blood test, results window, follow-up), SMS to the patient, evidence to Cloud Storage, a Block Kit review card in Slack with buttons staff can press.
+7. **Closes the loop with staff.** Staff ask the Slack bot or the web console "Why was CP-1043 routed for review?" and get the answer from the case's decision trace, with every fact tagged by provenance. They click **Ask patient: date of last dose**; the question appears in the patient's chat and phone, and the answer comes back to the review.
 
-```text
-Patient website
-      |
-      v
-GPT-5.6 Luna coordinator  --->  validated decision  --->  policy and state engine
-      |                                                     |
-      | asks for evidence                                   +--> simulated appointment + receipt
-      v                                                     +--> staff exception console
-Gemini label transcription                                 +--> Firestore case record
-      |
-      v
-RxNorm + PubChem + DailyMed
-      |
-      v
-TxGemma research adapter, isolated from care routing
-```
+### Who uses it
 
-## One story, one closed loop
+| Role | Surface | What they get |
+| --- | --- | --- |
+| Existing patient (verified record) | `/portal/<id>`: text, voice, camera | History reconstructed, missing evidence requested, next step completed, receipt |
+| Prospective patient (no record) | `/portal/prospective` | Conversational intake, a provisional and clearly labelled self-reported record, first visit booked |
+| Clinic staff | Slack private channel or `/staff` | Exceptions only. Review cards with actions; questions about any case; decision trace |
+| Research coordinator | `/research` | De-identified study pre-screens with consent status; recurring molecular signals |
 
-```text
-Maya asks for a medication review
-  -> CarePlus finds an unresolved past reaction in her clinic history
-  -> Maya uploads a label or uses the attributed DailyMed demo image
-  -> Gemini transcribes product text and active ingredients
-  -> Maya confirms or rejects the transcription
-  -> RxNorm resolves the ingredient and PubChem returns a molecular identity
-  -> DailyMed returns official label candidates with scope kept explicit
-  -> CarePlus offers appointment slots and waits for consent
-  -> the simulated booking is written once and a receipt is issued
-  -> the unresolved past reaction appears in the staff console
-  -> staff asks when the final dose was taken
-  -> the question arrives in Maya's patient conversation
-  -> "I don't remember" remains an unknown fact, not a guessed answer
-```
+### Provenance is first-class
 
-The demo stays focused on Maya. Four other profiles test whether the same agent can handle different case states instead of replaying one script:
+Every fact carries one of `patient_reported · document_extracted · database_verified · model_predicted · staff_confirmed · clinic_policy` (`src/core/types.ts`). The UI shows the tag; the coordinator reasons with it; staff can ask "which facts came from a document and which from the patient?" and get two lists. A prospective patient's record is labelled *Provisional · self-reported* until the clinic verifies it.
 
-| Profile | What it tests |
-|---|---|
-| Noor | Wheelchair and interpreter requests whose availability is not yet confirmed |
-| Leo | Patient-reported and imported medication records that disagree |
-| Sam | A routine follow-up supported by an existing care plan |
-| Alex | A new patient with no clinic history |
+### Walkthrough
 
-## One case, six connected services
+1. Open `/`, pick **Maya Lin**. Say: "My doctor recommended this cough medicine, but I took something similar last year and became dizzy. I can't remember what it was. Can you help me arrange a medication review?" CarePlus finds the unconfirmed June 2025 dizziness report in her record and asks for the bottle.
+2. Upload `public/demo/promethazine-bottle.png`. Gemini reads the label; the card shows the extraction and confidence. Confirm it.
+3. In one turn CarePlus resolves the medicine (RxNorm, PubChem, openFDA), runs TxGemma on both ingredients, routes amber (prior adverse experience), holds a video medication review with her usual GP in Google Calendar, sends the SMS, stores the photo in Cloud Storage and opens one staff review.
+4. In Slack or `/staff`, ask "Why was this routed for review?"; the answer comes from the trace. Click **Ask patient: date of last dose**; the question lands on Maya's phone. She answers; the reviewer sees it. **Confirm appointment** turns the hold into a booking and Maya gets the confirmation.
 
-CarePlus currently exercises six external services across one case. The state-changing delivery adapters are intentionally simulated until a real clinic chooses the destination accounts.
+Other personas exercise the other paths: **Arjun** (three dependency-aware bookings including wheelchair-accessible physio, fully autonomous), **Lucia** (Portuguese; routine asthma review booked and a medication review held for a prior rash), **Tom** (post-discharge, unsure what to book), **Grace** (research pre-screen with consent plus records transfer), **I'm new here** (prospective intake).
 
-| External system | What CarePlus uses it for | Current status |
-|---|---|---|
-| Google Cloud Firestore | Canonical synthetic case state, decisions, evidence, receipts, and the patient-to-staff loop | Live in the configured local run |
-| OpenAI API | `gpt-5.6-luna` coordinator calls that return structured next-action decisions | Live when a key is configured |
-| Google Gemini API | Prescription-label transcription with separate active-ingredient and visible-text fields | Live when a key is configured |
-| NIH RxNorm API | Exact ingredient identity lookup | Live public API |
-| NIH PubChem API | CID, stereochemical SMILES, and InChIKey lookup for resolved ingredients | Live public API |
-| NIH DailyMed API | Candidate official labels, with no claim that a candidate proves the photographed product | Live public API |
-| Appointment calendar | Slot offer, explicit confirmation, replay protection, and receipt | Simulated provider |
-| Clinic staff inbox / Slack path | Exception brief and staff follow-up action | In-app console works; Slack delivery is simulated |
-| Patient delivery | Confirmation receipt and staff question | In-app inbox works; SMS and email are simulated |
+## External apps used
 
-The distinction matters. A green check from a mock calendar is not a real clinic booking. Every receipt names the boundary.
+CarePlus takes actions across these systems. "Live" means the code path runs against the real service; nothing below is a stub.
 
-## TxGemma without the hand-waving
+| # | App / service | Role in the workflow | Actions taken | Status |
+| --- | --- | --- | --- | --- |
+| 1 | **Google Cloud Firestore** (Native mode, database `careplus`) | Canonical case store: patients, facts, cases, documents, medications, appointments, care tasks, communications, staff reviews, counters | Read/write on every turn; transactional counters for `CP-…` / `SR-…` refs | Live |
+| 2 | **Google Cloud Storage** | Evidence store for uploaded photos/PDFs; the case record keeps only the `gs://` pointer; the UI gets short-lived V4 signed URLs | Upload on ingest, signed read for the portal and staff console | Live |
+| 3 | **Vertex AI: TxGemma 2B** (`txgemma-2b-predict`, Model Garden, dedicated endpoint) | Molecular research signal on the confirmed compound's SMILES using the TDC prompt templates shipped with the model | `predict` per (molecule × task) | Live |
+| 4 | **Vertex AI: Gemini 3.1 Flash Lite** | Vision OCR of bottle/blister/discharge images; fast red-flag classifier (historical vs current mention) | `generateContent` with JSON schema | Live |
+| 5 | **Google Calendar API** (service account owns the clinic calendar) | Holds and books appointments with clinician rosters, rooms, accessibility and dependency constraints; reschedules by cancelling the superseded event | `freebusy.query`, `events.insert / patch / delete`, calendar shared to staff | Live |
+| 6 | **Slack** (Bolt, Socket Mode, Block Kit) | Clinic exception console: review cards with *Confirm appointment · Ask patient · Assign pharmacist · Dismiss*; @mention / DM / thread questions answered from the decision trace | `chat.postMessage`, `chat.update`, `views.open`, interactive actions | Live: cards post from the deployed service; button handling via `npm run slack` (Socket Mode). Web console at `/staff` mirrors the same cards |
+| 7 | **OpenAI** (`gpt-5.6-luna`, Responses API) | Coordinator: tool-calling loop over 20+ typed tools; never routes on its own | Tool calls | Live |
+| 8 | **RxNorm** (NLM) · **PubChem** (PUG REST) · **openFDA** (drug label) | Authoritative medicine identity, molecule record, official label text | REST lookups | Live, public |
+| 9 | **Twilio SMS** | Patient confirmations, held-slot notices, staff questions. Never carries clinical detail; always appends the portal link | `messages.create` | Live with credentials; otherwise a virtual phone panel in the portal |
+| 10 | **Google Cloud Run** | Hosts the app (`careplus` service, runs as the `careplus-agent` service account; secrets from Secret Manager) | Serves the portal, staff console and API | Live |
 
-TxGemma is the project's molecular specialist. It is not the coordinator and it cannot decide urgency, safety, diagnosis, dose, treatment, or access to care.
+The home page (`/`) shows which integrations are connected in the running instance.
 
-The adapter is built around two initial Therapeutics Data Commons classification prompts:
+### What is real and what is simulated
 
-- `BBB_Martins`, a research task for blood-brain barrier penetration
-- `ClinTox`, a research task based on clinical-trial toxicity and FDA approval labels
+| Real | Simulated |
+| --- | --- |
+| Every external call in the table above | The clinic, its roster, rooms and appointment types (`src/data/clinic.ts`) |
+| Firestore documents, Cloud Storage objects, Calendar events, Slack review cards (posted from the deployed service), SMS | The five patients and their histories (`src/data/patients.ts`) |
+| TxGemma and Gemini inference on Vertex AI | The phone, when Twilio credentials are absent (virtual phone panel in the portal) |
+| RxNorm, PubChem and openFDA lookups | The staff console, when Slack tokens are absent (`/staff` renders the same cards) |
+| Hosting on Cloud Run (the live demo above) | |
 
-This repository does **not** claim a live TxGemma result yet. The official prompt artifact is gated; an attempt with the available Hugging Face token returned HTTP 403. No paid Vertex deployment was provisioned or live-verified. Earlier brainstorm results were generated by Gemini prompted to act like TxGemma. They are not TxGemma evidence and are excluded from this README.
+## Setup instructions
 
-Instead of silently substituting another model, `careplus/txgemma.py` fails closed. Before a paid prediction it verifies:
+### Prerequisites
 
-- a pinned official TxGemma-Predict checkpoint and commit revision
-- approved prompt and artifact hashes
-- the Vertex endpoint, deployed model ID, model version, container image, and 100 percent traffic destination
-- a unique reviewed PubChem identity with stereochemistry-preserving SMILES
-- an exact one-token classification response tied to the verified deployment and input digest
+- Node 20+
+- A Google Cloud project with the Firestore, Cloud Storage, Vertex AI and Google Calendar APIs enabled, and a service-account key (or `gcloud auth application-default login`)
+- An OpenAI API key
+- Optional: Slack app tokens, Twilio credentials
 
-The current adapter requires a pinned deployment manifest and the future `careplus-txgemma-identity-v1` runtime identity report. No custom container implements that protocol yet, and the resolver does not supply the required chemistry-validation metadata. An ordinary Model Garden endpoint alone cannot enable inference.
-
-Unsupported tasks, mixtures, disconnected salts, ambiguous identities, altered manifests, wrong traffic splits, malformed output, authentication failures, and provider failures return `abstained` or `unavailable`. Gemini is never used as a fallback. Completed research is stored separately and never enters the coordinator's routing context.
-
-The point is not to put TxGemma in a diagram. It is to make a molecular model useful while proving which model, prompt, molecule, deployment, and output produced every result.
-
-Read the [TxGemma specialist contract and evaluation plan](docs/research/txgemma.md).
-
-## Built to be caught when it is wrong
-
-A completed request is not automatically a correct result. CarePlus records the evidence, model decision, state change, and receipt so failures can be inspected after the run.
-
-### Current verified results
-
-Run on September 13, 2026:
-
-| Check | Result | What it covers |
-|---|---|---|
-| Deterministic test suite | **144 passed** | Access isolation, consent, request replay, stale writes, urgent-stop precedence, evidence rejection, coordinator validation, research isolation, and TxGemma deployment-contract failures |
-| Live Luna regression | **12 of 12 passed** | Missing history, unavailable label, routine follow-up, new patient, accommodations, conflicting records, staff questions, prompt injection, research requests, current versus historical urgent wording, and an unknown request |
-| End-to-end API run | Corrected journey passed in 22.20 seconds | Firestore, live Luna, active-only Gemini OCR, exact RxNorm salt identity, PubChem CID 8980, confirmation-triggered replanning, simulated booking, staff follow-up, and access denial. Molecular work abstained; no genuine TxGemma prediction claimed |
-| Browser journey | Blocked by T3 preview failure | An API success is not presented as proof that the patient and staff screens work |
-| Genuine TxGemma inference | Not yet verified | The adapter and contract tests exist, but no authorized endpoint result is claimed |
-
-The post-fix Luna run had a 2.33-second median latency for model-backed cases and required no response repairs. Keep Luna for this build; a Sol comparison is not needed to continue.
-
-Run the deterministic suite:
+### 1. Install and configure
 
 ```bash
-uv run pytest -q
+git clone https://github.com/tayyab415/careplus && cd careplus
+npm install
+cp .env.example .env
 ```
 
-Run the live coordinator regression. This makes provider calls and may incur API charges:
+Fill in `.env`:
+
+| Variable | Purpose |
+| --- | --- |
+| `OPENAI_API_KEY`, `COORDINATOR_MODEL` (`gpt-5.6-luna`), `COORDINATOR_REASONING` (`low`) | Coordinator LLM |
+| `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` | GCP auth (SA key auto-detected at `./secrets/careplus-agent.json`, else ADC) |
+| `STORE_BACKEND` (`firestore` default \| `memory`), `FIRESTORE_DATABASE` (`careplus`) | Case store |
+| `EVIDENCE_BUCKET` | Cloud Storage bucket for uploads |
+| `FAST_MODEL`, `VISION_MODEL` (`gemini-3.1-flash-lite`) | Vertex-served Gemini for OCR and the classifier |
+| `TXGEMMA_ENDPOINT_ID`, `TXGEMMA_DEDICATED_DNS`, `TXGEMMA_LOCATION` | TxGemma endpoint |
+| `CLINIC_CALENDAR_ID`, `CALENDAR_SHARE_WITH` | Clinic calendar (created by the SA on first use and shared with you) |
+| `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_TRIAGE_CHANNEL` | Slack exception console |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | Real SMS |
+| `PUBLIC_BASE_URL` | Portal link appended to every SMS |
+| `CAREPLUS_DRY_RUN` | Simulate every external action (useful for CI) |
+
+### 2. Google Cloud
 
 ```bash
-PYTHONPATH=. uv run python scripts/evaluate.py --model gpt-5.6-luna
+gcloud services enable firestore.googleapis.com storage.googleapis.com aiplatform.googleapis.com calendar-json.googleapis.com
+gcloud firestore databases create --database=careplus --location=us-central1 --type=firestore-native
+gsutil mb -l us-central1 gs://<your-evidence-bucket>
+gcloud iam service-accounts create careplus-agent
+# roles: datastore.user, storage.objectAdmin, aiplatform.user
+gcloud iam service-accounts keys create secrets/careplus-agent.json --iam-account careplus-agent@<project>.iam.gserviceaccount.com
 ```
 
-With the development server running, exercise the full API journey:
+**TxGemma:** in Vertex AI Model Garden open *TxGemma*, choose *Deploy* for `txgemma-2b-predict` (one L4 is enough). Then:
 
 ```bash
-PYTHONPATH=. uv run python scripts/journey.py
+gcloud ai endpoints list --region=us-central1          # TXGEMMA_ENDPOINT_ID
+gcloud ai endpoints describe <id> --region=us-central1  # dedicatedEndpointDns -> TXGEMMA_DEDICATED_DNS
 ```
 
-The live run saves complete artifacts under `.local/evals/` so a failure can be inspected rather than reduced to an HTTP status. The evaluation is a small regression suite, not clinical validation or a generalization benchmark.
+The Firestore database is seeded with the synthetic clinic and five synthetic patients on first request.
 
-### Failure cases covered by tests
+### 3. Slack (optional; the web console at `/staff` stands in otherwise)
 
-- A repeated booking request cannot create a second appointment.
-- Reusing a request ID with different input is a conflict.
-- One patient's token cannot read another patient's case.
-- A rejected OCR result never reaches ingredient lookup.
-- An inactive ingredient cannot enter molecular research.
-- Current urgent wording preempts an existing offer, while quoted or historical wording does not.
-- Coordinator output with invented citations or unsupported observations gets one repair attempt, then fails closed.
-- Research output is removed from the coordinator context, so changing it cannot change clinic routing.
-- A tampered TxGemma manifest, prompt, container, model version, traffic split, response identity, or output format blocks the prediction.
-- Accessibility support remains unconfirmed until a clinic-owned system or staff member confirms it.
+1. [api.slack.com/apps](https://api.slack.com/apps): *Create New App*, *From an app manifest*, paste `slack-app-manifest.yaml`.
+2. Install to workspace; copy the Bot User OAuth Token to `SLACK_BOT_TOKEN`.
+3. Basic Information, App-Level Tokens: create one with `connections:write` and copy it to `SLACK_APP_TOKEN`.
+4. Create a private channel, invite the bot, put its ID in `SLACK_TRIAGE_CHANNEL`.
 
-## What you can run today
-
-| Area | Current implementation |
-|---|---|
-| Patient experience | Text conversation, five fictional profiles, image upload, transcription review, appointment choices, case status, evidence, and receipts |
-| Staff experience | Exception queue, full evidence and decision trace, and a follow-up action that updates the patient's conversation |
-| Case storage | Firestore by default, with an explicit SQLite option for local tests. There is no silent cloud-to-local fallback |
-| Coordinator | Live structured OpenAI calls checked against the current case, permitted actions, quoted observations, and evidence IDs |
-| Document flow | JPEG, PNG, or WebP validation, size limits, SHA-256 fingerprinting, Gemini transcription, and mandatory patient confirmation |
-| Medication evidence | RxNorm ingredient lookup, PubChem molecular identity, and scoped DailyMed label candidates |
-| Scheduling | Two deterministic demo slots, explicit consent, idempotent confirmation, and an honest simulated receipt |
-| Access boundary | Per-case bearer token, separate local staff session, host/origin checks, CSP, no-store responses, and loopback-only serving |
-| Molecular research | A fail-closed TxGemma Vertex adapter and deployment identity contract, without a claimed live model result |
-| Voice | Not implemented |
-| Public deployment | Not implemented. The server binds to `127.0.0.1` |
-
-Use synthetic data only. This is not a production clinic portal, a validated triage system, or evidence of regulatory compliance.
-
-## Run CarePlus locally
-
-Requirements:
-
-- Python 3.11 or newer
-- [`uv`](https://docs.astral.sh/uv/)
-- OpenAI and Gemini keys for live coordinator and OCR calls
-- Google Application Default Credentials and a Firestore project, unless you deliberately select SQLite
+### 4. Run
 
 ```bash
-git clone https://github.com/tayyab415/careplus.git
-cd careplus
-uv sync
-cp -n .env.example .env
-scripts/dev.sh
+npm run dev          # http://localhost:3000 - portal, staff console, research view
+npm run slack        # Socket-Mode Slack bot (separate terminal, needs tokens)
 ```
 
-Open `http://127.0.0.1:8090`.
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Patient portal, staff console (`/staff`), research view (`/research`) |
+| `npm run eval [scenario…]` | End-to-end scenario harness with assertions (see [Reliability testing](#reliability-testing)) |
+| `npm run smoke -- <specialist> "…"` | Exercise one specialist in isolation: `resolver`, `txgemma`, `vision`, `redflag`, `slots`, `calendar` |
+| `npm run typecheck` | `tsc --noEmit` |
 
-The server binds to loopback because the profile picker and staff-role switch are demo controls, not authentication suitable for a public clinic. Do not expose it through a tunnel without replacing those controls.
+Demo images are in `public/demo/` (`promethazine-bottle.png`, `amoxicillin-blister.png`).
 
-Set credentials in `.env` or the process environment:
+### 5. Deploy to Cloud Run
 
-```ini
-OPENAI_API_KEY=
-CAREPLUS_COORDINATOR_MODEL=gpt-5.6-luna
-GEMINI_API_KEY=
-CAREPLUS_VISION_MODEL=gemini-3.1-flash-lite
-GOOGLE_CLOUD_PROJECT=
-CAREPLUS_STORE=firestore
-CAREPLUS_COLLECTION=careplus_demo_v1
+`./deploy.sh` builds the image with Cloud Build, deploys the `careplus` service with the `careplus-agent` service account, mounts `OPENAI_API_KEY`, the SA key and (when present) the Slack tokens from Secret Manager, and sets `PUBLIC_BASE_URL` to the service's own URL. Nothing from `.env` or `./secrets` is baked into the image; the one-time project setup is listed at the bottom of the script.
+
+```bash
+./deploy.sh              # build + deploy
+SKIP_BUILD=1 ./deploy.sh # redeploy the last image
 ```
 
-For local storage instead of Firestore:
+Hosted instance: https://careplus-697390864676.us-central1.run.app
 
-```ini
-CAREPLUS_STORE=sqlite
+## Reliability testing
+
+Reliability is designed in, then measured.
+
+### Designed in
+
+- **The LLM does not route.** It must call `evaluate_routing`; the policy engine (`src/core/policy/policyEngine.ts`) returns the tier and what may be booked. Clinic rules are data (`src/data/clinic.ts`), not prompt text.
+- **Red flags are screened before the model sees the message** (`src/core/policy/redFlags.ts`): keyword rules, plus a fast classifier used only to distinguish a historical mention ("I had chest pain last year, it was reflux") from a current one. Safety never depends on the coordinator behaving.
+- **Nothing extracted from an image becomes record until the patient confirms it.** Extraction confidence is stored and shown.
+- **TxGemma is bounded.** It only receives a SMILES string; its output is typed (`TxGemmaSignal`), labelled `model_predicted`, compared with the official label, and a disagreement is itself an amber trigger. Regression tasks were removed from auto-selection after evaluation showed low-quality outputs at 2B.
+- **Idempotent side effects.** One open staff review per case (later findings update it rather than duplicate it); re-booking the same appointment type cancels the superseded hold in Calendar; SMS is sent only when something changed for the patient; portal URLs in SMS are generated by the system, never by the model.
+- **Bounded tool loop** with a forced summary turn if the budget is exhausted, so the patient always gets a real reply (`src/agent/coordinator.ts`).
+- **Retries with backoff** on Vertex 429/503; graceful degradation when an integration is missing (virtual phone, web staff console, in-memory store), reported on the home page rather than silently.
+- **Firestore-safe records.** Evidence goes to Cloud Storage and only the pointer is stored, keeping case documents well under the 1 MiB limit (a full Maya case is about 30 KB).
+
+### Measured: `npm run eval`
+
+`scripts/eval.ts` drives the real coordinator, real tools and real external APIs (Vertex Gemini, TxGemma, RxNorm/PubChem/openFDA, Calendar in dry-run) through scripted multi-turn patient conversations on a fresh store, then asserts on the outcomes, cumulatively across turns: cards rendered, tier chosen, appointments held or booked, reviews created, TxGemma tasks selected, SMS content.
+
+| Scenario | Path exercised | Key assertions |
+| --- | --- | --- |
+| `maya` | Prior adverse experience, photo, confirm, amber | `evidence_request` card on turn 1; extraction confirm card; RxNorm exact match; ClinTox and BBB signals; held video review with usual GP; exactly one staff review; SMS carries no clinical detail |
+| `arjun` | Three linked instructions from GP | Blood test booked before follow-up with results window; wheelchair-accessible physio location chosen; green, no staff review |
+| `tom` | Post-discharge, unsure what to book | Discharge PDF extracted; medication change routes amber; correct appointment type chosen |
+| `lucia` | Non-English (Portuguese), prior rash | Replies in Portuguese; `Skin_Reaction` TxGemma task selected; routine asthma review booked and medication review held; one review |
+| `grace` | Research interest plus records transfer | Study pre-screen with explicit consent; records-transfer task; no eligibility claim made |
+| `red` | Current chest pain | Red flag fires before the LLM; urgent card; urgent staff alert; no booking |
+| `historical-not-red` | "Chest pain last year, it was reflux" | Does not trip red; proceeds as routine |
+| `prospective` | New patient, no record | Intake questions asked conversationally; provisional record labelled self-reported; `slot_options` card; first visit booked |
+
+**Current result: 8 / 8 scenarios passing.** Each run prints the agent's replies, cards, decision trace and every external action, so regressions in behaviour, not only crashes, are visible. The harness was the primary instrument for tuning routing and prompts; the fixes it drove (duplicate reviews, invented URLs, missing upload control, over-eager SMS, symptom-to-label matching) are all now assertions.
+
+```bash
+npm run eval                 # all scenarios
+npm run eval maya red        # a subset
 ```
 
-This changes storage only. It does not replace live model calls with fixtures. Never commit keys, print tokens, or upload real patient records.
+### Also verified
 
-## The two-minute demo
+- `npm run typecheck` clean; `npm run lint` clean.
+- End-to-end browser run of the Maya flow against live Firestore, Cloud Storage, Calendar and Vertex: case, document pointer, appointment, review and SMS all present in Firestore; photo present in the bucket; staff console reads the same record.
+- Specialist smoke tests (`npm run smoke`) for each external dependency in isolation.
 
-The planned two-minute demo still needs a verified recording:
+## Demo video
 
-> **Demo video:** pending
+**Demo (under 2 minutes):** _link to be added_
 
-The strongest recording is one complete loop, not a tour of every screen:
+What the video shows, in order: Maya's request; history found; bottle photo read and confirmed; RxNorm/PubChem/openFDA and TxGemma in one turn; amber routing; Calendar hold and SMS on the phone; Slack review card; "Why was this routed?" answered from the trace; *Ask patient* lands on the phone; staff confirms; booking receipt.
 
-1. Start with Maya's request.
-2. Show that CarePlus reads the unresolved history and asks for evidence.
-3. Upload or select the public DailyMed sample, then confirm the transcription.
-4. Confirm a simulated appointment and pause on the receipt.
-5. Open the staff console and inspect why the case needs review.
-6. Send "When was the final dose?" back to Maya.
-7. End on the case trace and the explicit TxGemma boundary.
+## Architecture
 
-## Repository map
-
-```text
-careplus/
-  app.py             FastAPI routes and local access boundary
-  coordinator.py     structured Luna planner and output validation
-  engine.py          case state, evidence, actions, receipts, and staff loop
-  specialists.py     Gemini OCR, RxNorm, PubChem, and DailyMed adapters
-  txgemma.py         pinned Vertex deployment contract and fail-closed parser
-static/               patient and staff web interface
-scripts/evaluate.py   live coordinator regression suite
-scripts/journey.py    end-to-end HTTP journey and artifact capture
-tests/                deterministic state, policy, API, coordinator, and TxGemma tests
-docs/                 architecture, recovered product intent, research, and handoff
+```
+Patient portal (Next.js 15)  ── text · voice · photo/PDF ──▶  /api/chat (SSE)
+                                                                  │
+                                       Red-flag screen (deterministic, before the LLM)
+                                                                  │
+                                   Coordinator — GPT 5.6 Luna, tool-calling loop (20+ typed tools)
+                                                                  │
+   ┌───────────────┬────────────────┬───────────────┬─────────────┴──────┬──────────────────┬────────────────────┐
+ Firestore       Gemini 3.1       RxNorm ·        openFDA          TxGemma 2B          Policy engine        Actions
+ case store      Flash Lite       PubChem         official         Vertex AI            clinic-authored      Google Calendar (SA)
+ + Cloud Storage vision OCR       identity +      label            dedicated endpoint   red / amber / green  SMS (Twilio / virtual phone)
+ evidence        + classifier     SMILES                           TDC prompts                               Slack review cards + Q&A
 ```
 
-Further reading:
+**Who decides what.** The coordinator gathers, asks, resolves and explains. The policy engine decides the tier. Red-flag rules run first. TxGemma only sees SMILES and only produces a labelled research signal. Staff have the last word on anything amber.
 
-- [Architecture and safety boundaries](docs/ARCHITECTURE.md)
-- [Recovered product intent](docs/context/brainstorm-recovery.md)
-- [TxGemma sources and serving contract](docs/research/txgemma.md)
-- [Current handoff and unresolved work](docs/HANDOFF.md)
+### Code map
 
-## What comes next
+```
+src/agent/          coordinator loop, system prompt, tool definitions + handlers, context builder
+src/core/policy/    red-flag screen, routing engine
+src/core/types.ts   zod schemas: Fact (provenance), Patient, Case, StaffReview, Card, TxGemmaSignal…
+src/core/store/     CaseStore interface; Firestore (default) + in-memory implementations
+src/specialists/    vision label extractor · RxNorm/PubChem/openFDA resolver · TxGemma client + TDC task selection
+src/actions/        scheduler + Google Calendar · evidence (Cloud Storage) · messaging (Twilio/virtual phone) · Slack cards · staff reviews
+src/data/           synthetic clinic (roster, rooms, appointment types, red-flag rules, studies) + 5 synthetic patients
+src/app/            portal, staff console, research view, API routes
+scripts/            eval.ts (scenario harness) · smoke.ts · slack-bot.ts
+deploy.sh           Cloud Run build + deploy
+slack-app-manifest.yaml
+```
 
-1. Record a clean post-fix live journey and complete browser verification.
-2. Connect a clinic-owned calendar, private Slack channel, and patient delivery target with signed callbacks and provider receipts.
-3. Obtain authorized TxGemma artifacts, approve a time-limited Vertex budget, deploy the pinned endpoint, and publish genuine task evaluation results.
-4. Replace the demo identity controls, move uploaded images to private object storage, define retention and deletion, then review a Cloud Run deployment.
-5. Add voice only after transcript handling, consent, and action replay are tested as a separate path.
+### TxGemma
 
-The pitch is simple: finish the coordination work, show the evidence, and never disguise an unknown as an answer.
+`txgemma-2b-predict` from Vertex AI Model Garden on a dedicated endpoint. Prompts are the TDC templates shipped with the model (`src/specialists/txgemma/tdc_prompts.json`). Tasks are chosen from what the patient reported: dizziness or drowsiness selects `BBB_Martins`; rash selects `Skin_Reaction`; palpitations select `hERG`; interaction concerns select the CYP tasks; `ClinTox` is always on. Each signal is compared with the official label's adverse-reactions section and recorded as corroborating context or as a disagreement (an amber trigger). It is presented to staff, not used to advise the patient.
+
+## Scope and non-claims
+
+All patients, clinicians, records and the clinic are synthetic; no real health information is used. CarePlus coordinates care; it does not diagnose, prescribe, alter medication, determine causation, declare a medicine safe or determine trial eligibility. Running on Google Cloud does not make this a compliance, privacy or security design; a real clinic deployment would need one, deliberately. This repository is a prototype demonstrating autonomous, bounded, auditable multi-app coordination.

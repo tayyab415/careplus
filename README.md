@@ -68,10 +68,7 @@ CarePlus takes actions across these systems. "Live" means the code path runs aga
 | 4 | **Vertex AI: Gemini 3.1 Flash Lite** | Vision OCR of bottle/blister/discharge images; fast red-flag classifier (historical vs current mention) | `generateContent` with JSON schema | Live |
 | 5 | **Google Calendar API** (service account owns the clinic calendar) | Holds and books appointments with clinician rosters, rooms, accessibility and dependency constraints; reschedules by cancelling the superseded event | `freebusy.query`, `events.insert / patch / delete`, calendar shared to staff | Live |
 | 6 | **Slack** (Bolt, Socket Mode, Block Kit) | Clinic exception console: review cards with *Confirm appointment · Ask patient · Assign pharmacist · Dismiss*; @mention / DM / thread questions answered from the decision trace | `chat.postMessage`, `chat.update`, `views.open`, interactive actions | Live: cards post from the deployed service; button handling via `npm run slack` (Socket Mode). Web console at `/staff` mirrors the same cards |
-| 7 | **OpenAI** (`gpt-5.6-luna`, Responses API) | Coordinator: tool-calling loop over 20+ typed tools; never routes on its own | Tool calls | Live |
-| 8 | **RxNorm** (NLM) · **PubChem** (PUG REST) · **openFDA** (drug label) | Authoritative medicine identity, molecule record, official label text | REST lookups | Live, public |
-| 9 | **Twilio SMS** | Patient confirmations, held-slot notices, staff questions. Never carries clinical detail; always appends the portal link | `messages.create` | Live with credentials; otherwise a virtual phone panel in the portal |
-| 10 | **Google Cloud Run** | Hosts the app (`careplus` service, runs as the `careplus-agent` service account; secrets from Secret Manager) | Serves the portal, staff console and API | Live |
+| 7 | **RxNorm** (NLM) · **PubChem** (PUG REST) · **openFDA** (drug label) | Authoritative medicine identity, molecule record, official label text | REST lookups | Live, public |
 
 The home page (`/`) shows which integrations are connected in the running instance.
 
